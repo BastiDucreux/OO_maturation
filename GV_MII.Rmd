@@ -1,0 +1,1071 @@
+---
+title: "GV_MII"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+set.seed(100)
+library(readr)
+library(readxl)
+library(limma)
+library(edgeR)
+library(dplyr)
+library(RobustRankAggreg)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(PCAtools)
+library(ComplexUpset)
+library(UpSetR)
+library(stringr)
+library(gridExtra)
+library(cowplot)
+library(enrichplot)
+library(MetaVolcanoR)
+library(plotly)
+library(htmlwidgets)
+```
+
+```{r preparation datasets}
+for (k in list.files("DATA")){
+  assign(gsub(".count", "", k),read.csv(k, sep=""))
+}
+
+dfs = lapply(mget(ls(pattern="_data")), function(df) {
+  df = as.data.frame(df)
+  rownames(df) = df$Geneid
+  df=df[,-1]
+})
+
+list2env(dfs,globalenv())
+
+read_excel_allsheets <- function(filename, tibble = FALSE) {
+  sheets <- readxl::excel_sheets(filename)
+  x <- lapply(sheets, function(X) readxl::read_excel(filename, sheet = X))
+  if(!tibble) x <- lapply(x, as.data.frame)
+  names(x) <- sheets
+  x
+}
+
+Metadata <- read_excel_allsheets("Metadata_OVO.xlsx")
+Metadata=lapply(Metadata,function(df) {
+  rownames(df) = df$run_accession
+  df$Group=factor(df$Group)
+  df
+})
+list2env(Metadata,globalenv())
+
+GVMII_data = list("Llonch et al."=Llonch_data,"Yu et al."=Yu_data,"Reyes et al."=Reyes_data,"Hu et al."=Hu_data,
+                  "Takeuchi et al."=Takeuchi_data,"Ntostis et al."=Ntostis_data,"Pietroforte et al."=Pietroforte_data)
+GVMII = list("Llonch et al."=`Llonch et al.`,"Yu et al."=`Yu et al.`,"Reyes et al."=`Reyes et al.`,"Hu et al."=`Hu et al.`,"Takeuchi et al."=`Takeuchi et al.`,"Ntostis et al."=`Ntostis et al.`,"Pietroforte et al."=`Pietroforte et al.`)
+
+year=list("Llonch et al."="2021",
+           "Yu et al."="2020",
+           "Reyes et al."="2017",
+           "Hu et al."="2022",
+           "Takeuchi et al."="2022",
+           "Ntostis et al."="2021")
+```
+
+```{r normalisation and DE}
+res=list()
+resMETAL=list()
+logcpm_list=list()
+
+for (k in c("Llonch et al.","Yu et al.","Reyes et al.","Hu et al.","Takeuchi et al.","Ntostis et al.")){
+  
+  if (k%in%c("Llonch et al.","Ntostis et al.")){
+    y <- DGEList(counts=GVMII_data[[k]], genes=rownames(GVMII_data[[k]]))
+    isexpr <- filterByExpr(y,group=GVMII[[k]]$Group)
+    y <- y[isexpr,]
+    y <- calcNormFactors(y)
+    design <- model.matrix(~ 0 + Group + Patient, data = GVMII[[k]])
+    v <- voom(y,design,plot=FALSE)
+    fit <- lmFit(v, design = design)
+    contrastMatrix <- makeContrasts(GroupMII-GroupGV,levels=design)
+    fit2 <- contrasts.fit(fit,contrastMatrix)
+    fit2.de <- eBayes(fit2)
+    resGVMII=limma::topTable(fit2.de, coef=1,n = Inf, adjust.method = "BH",confint=TRUE)
+    res[[k]]=resGVMII
+    resMETAL[[k]]=dplyr::select(resGVMII,effectsize=logFC,Pval=P.Value,probe=genes) %>% 
+      left_join(data.frame(probe=rownames(sqrt(fit2.de$s2.post) * fit2.de$stdev.unscaled),
+                           SE=sqrt(fit2.de$s2.post) * fit2.de$stdev.unscaled[1]),
+                by="probe")
+    logcpm_list[[k]]=edgeR::cpm(y,prior.count=1,log=TRUE)
+  }
+  
+  if (k%in%c("Reyes et al.","Yu et al.")){
+    y <- DGEList(counts=GVMII_data[[k]], genes=rownames(GVMII_data[[k]]))
+    isexpr <- filterByExpr(y,group=GVMII[[k]]$Group)
+    y <- y[isexpr,]
+    y <- calcNormFactors(y)
+    design <- model.matrix(~ 0 + Group + Patient + Age, data = GVMII[[k]])
+    v <- voom(y,design,plot=FALSE)
+    fit <- lmFit(v, design = design)
+    contrastMatrix <- makeContrasts(GroupMII-GroupGV,levels=design)
+    fit2 <- contrasts.fit(fit,contrastMatrix)
+    fit2.de <- eBayes(fit2)
+    resGVMII=limma::topTable(fit2.de, coef=1,n = Inf, adjust.method = "BH",confint=TRUE)
+    res[[k]]=resGVMII
+    resMETAL[[k]]=dplyr::select(resGVMII,effectsize=logFC,Pval=P.Value,probe=genes) %>% 
+      left_join(data.frame(probe=rownames(sqrt(fit2.de$s2.post) * fit2.de$stdev.unscaled),
+                           SE=sqrt(fit2.de$s2.post) * fit2.de$stdev.unscaled[1]),
+                by="probe")
+    logcpm_list[[k]]=edgeR::cpm(y,prior.count=1,log=TRUE)
+  }
+  
+  else{
+    y <- DGEList(counts=GVMII_data[[k]], genes=rownames(GVMII_data[[k]]))
+    isexpr <- filterByExpr(y,group=GVMII[[k]]$Group)
+    y <- y[isexpr,]
+    y <- calcNormFactors(y)
+    design <- model.matrix(~ 0 + Group, data = GVMII[[k]])
+    v <- voom(y,design,plot=FALSE)
+    fit <- lmFit(v, design)
+    contrastMatrix <- makeContrasts(GroupMII-GroupGV,levels=design)
+    fit2 <- contrasts.fit(fit,contrastMatrix)
+    fit2.de <- eBayes(fit2)
+    resGVMII=limma::topTable(fit2.de, coef=1,n = Inf, adjust.method = "BH",confint=TRUE)
+    res[[k]]=resGVMII
+    resMETAL[[k]]=dplyr::select(resGVMII,effectsize=logFC,Pval=P.Value,probe=genes) %>% 
+      left_join(data.frame(probe=rownames(sqrt(fit2.de$s2.post) * fit2.de$stdev.unscaled),
+                           SE=sqrt(fit2.de$s2.post) * fit2.de$stdev.unscaled[1]),
+                by="probe")
+    logcpm_list[[k]]=edgeR::cpm(y,prior.count=1,log=TRUE)
+  }
+}
+
+res_adj=lapply(res,function(df) {
+  dplyr::filter(df,df$`adj.P.Val`<0.05 & abs(logFC)>1)
+})
+
+ranked_df = lapply(resMETAL, function(df) {
+  df$metric=df$effectsize*df$Pval
+  df = df[order(df$metric),]
+  df = df[,"probe"]
+})
+
+percentUP=c()
+percentDOWN=c()
+percentNO=c()
+
+for (k in c("Reyes et al.","Yu et al.","Ntostis et al.","Llonch et al.","Hu et al.","Takeuchi et al.")){
+  percentUP=c(percentUP,res_adj[[k]]%>%filter(logFC>0)%>%dim()%>%first()/res[[k]]%>%dim()%>%first())
+  percentDOWN=c(percentDOWN,res_adj[[k]]%>%filter(logFC<0)%>%dim()%>%first()/res[[k]]%>%dim()%>%first())
+  percentNO=c(percentNO,1-res_adj[[k]]%>%filter(logFC>0)%>%dim()%>%first()/res[[k]]%>%dim()%>%first()-res_adj[[k]]%>%filter(logFC<0)%>%dim()%>%first()/res[[k]]%>%dim()%>%first())
+}
+```
+
+```{r 1-by-1 PCA}
+
+list_fig=list()
+
+for (k in c("Reyes et al.","Yu et al.","Ntostis et al.","Llonch et al.","Hu et al.","Takeuchi et al.")){
+
+data=logcpm_list[[k]]
+res.pca=PCAtools::pca(data,removeVar=0.1)
+PCA=as.data.frame(res.pca$rotated[,1:2])
+PCA$`Maturation stage`=Metadata[[k]]$Group
+p1=ggplot(PCA,aes(PC1,PC2))+ geom_point(size=2.5,aes(fill=`Maturation stage`),colour="black",pch=21, size=5)  +xlab(paste0("PC1: ",round(res.pca$variance[1],0),"% variance")) +
+  ylab(paste0("PC2: ",round(res.pca$variance[2],0),"% variance"))+
+  theme_bw()+
+  ggtitle(paste0(k," ",year[[k]]))+
+  scale_fill_manual(values=c("GV"="white",
+    "MI"="#D0D0DB",
+                     "MII"="#000000"))+
+  theme(axis.title.x=element_text(size=15))+ 
+  theme(axis.title.y=element_text(size=15,vjust=0))+ 
+  theme(axis.text.x=element_text(size=10,margin=margin(3,0,10,0)))+ 
+  theme(axis.text.y=element_text(size=10,margin=margin(0,3,0,15)))+ 
+  theme(legend.title=element_text(size=15))+ 
+  theme(legend.text=element_text(size=12))
+  list_fig[[k]]=p1
+}
+   
+
+FigPCAindivGVMII=plot_grid(list_fig[[1]],
+          list_fig[[2]],
+          list_fig[[3]],
+          list_fig[[4]],
+          list_fig[[5]],
+          list_fig[[6]],ncol = 3, nrow = 2,align="hv")
+
+```
+
+```{r, volcanoplots}
+list_fig=list()
+
+for (k in c("Reyes et al.","Yu et al.","Ntostis et al.","Llonch et al.","Hu et al.","Takeuchi et al.")){
+  
+DEGres=res[[k]][res[[k]]$adj.P.Val<0.05,]
+data <- data.frame(res[[k]]) %>% 
+  mutate(
+    Expression = case_when(logFC >= 0 & adj.P.Val <= 0.05 ~ "Up-regulated in MII",
+                           logFC <= 0 & adj.P.Val <= 0.05 ~ "Down-regulated in MII",
+                           TRUE ~ "Unchanged")
+  )
+data=data[complete.cases(data),]
+list_fig[[k]] <- ggplot(data, aes(logFC, -log(P.Value,10))) +
+  geom_point(aes(color = Expression), size = 2) + 
+  xlab(expression("log"[2]*"FC (MII-GV)")) + labs(color="Expression")+
+  ylab(expression("-log"[10]*" "*italic(p)*"-value")) +
+  scale_color_manual(values = c( "blue","gray50","red")) +
+  guides(colour = guide_legend(override.aes = list(size=3)))+theme_bw()+ 
+  ggtitle(paste0(k," ",year[[k]]))+
+  theme(axis.title.x=element_text(size=15,margin=margin(0,0,0,0)))+ 
+  theme(axis.title.y=element_text(size=15,vjust=0))+ 
+  theme(axis.text.x=element_text(size=10,margin=margin(3,0,10,0)))+ 
+  theme(axis.text.y=element_text(size=10,margin=margin(0,3,0,10)))+ 
+  theme(legend.title=element_text(size=15))+ 
+  theme(legend.text=element_text(size=12))
+}
+
+FigVolcanoindivGVMII=plot_grid(list_fig[[1]],
+          list_fig[[2]],
+          list_fig[[3]],
+          list_fig[[4]],
+          list_fig[[5]],
+          list_fig[[6]],ncol = 3, nrow = 2,align="hv")
+
+```
+
+
+```{r 2:pathways up and down}
+GO_listUP=list()
+GO_plot=list()
+for (k in c("Llonch et al.","Yu et al.","Reyes et al.","Hu et al.","Takeuchi et al.","Ntostis et al.")){
+  entrez=bitr(res[[k]]$genes,fromType = "SYMBOL",toType = "ENTREZID",OrgDb = org.Hs.eg.db)
+  entrez=merge(entrez,res[[k]],by.x="SYMBOL",by.y="genes")
+  rownames(entrez)=entrez$ENTREZID
+  GO_listUP[[k]]=enrichGO(gene          = rownames(entrez)[entrez$adj.P.Val<0.05 & entrez$logFC>=1],
+              universe      = rownames(entrez),
+              OrgDb         = org.Hs.eg.db,
+              ont           = "BP",
+              pAdjustMethod = "BH",
+              pvalueCutoff  = 1,
+              qvalueCutoff  = 1,
+              readable      = TRUE)
+  data=GO_listUP[[k]]%>%head(n=10)
+  data$Description=factor(data$Description,levels=rev(data$Description))
+  GO_plot[[k]]=ggplot(data=data, aes(x=Description, y=Count)) +
+  geom_bar(stat="identity",aes(fill=p.adjust))  +scale_fill_gradient(low="red",high="red",
+                       limits = c(0, 0.05))+ coord_flip()+  guides(colour = guide_legend(override.aes = list(size=3)))+theme_bw()+ scale_x_discrete(labels = function(x) str_wrap(x, width = 35))+
+  ggtitle(paste0(k," ",year[[k]]))+
+  theme(axis.title.x=element_text(size=10,margin=margin(0,0,0,0)))+ 
+  theme(axis.title.y=element_text(size=10,vjust=0))+ 
+  theme(axis.text.x=element_text(size=10,margin=margin(3,0,10,0)))+ 
+  theme(axis.text.y=element_text(size=10,margin=margin(0,3,0,10)))+ 
+  theme(legend.title=element_text(size=10))+ theme(plot.title = element_text(size=12))+
+  theme(legend.text=element_text(size=12))+ theme(legend.position = "none")    
+}
+
+FigGOindivGVMIIUP=plot_grid(GO_plot[[1]],
+          GO_plot[[2]],
+          GO_plot[[3]],
+          GO_plot[[4]],
+          GO_plot[[5]],
+          GO_plot[[6]],ncol = 3, nrow = 2,align="hv")
+
+
+GO_listDOWN=list()
+GO_plot=list()
+for (k in c("Llonch et al.","Yu et al.","Reyes et al.","Hu et al.","Takeuchi et al.","Ntostis et al.")){
+  entrez=bitr(res[[k]]$genes,fromType = "SYMBOL",toType = "ENTREZID",OrgDb = org.Hs.eg.db)
+  entrez=merge(entrez,res[[k]],by.x="SYMBOL",by.y="genes")
+  rownames(entrez)=entrez$ENTREZID
+  GO_listDOWN[[k]]=enrichGO(gene          = rownames(entrez)[entrez$adj.P.Val<0.05 & entrez$logFC<=-1],
+              universe      = rownames(entrez),
+              OrgDb         = org.Hs.eg.db,
+              ont           = "BP",
+              pAdjustMethod = "BH",
+              pvalueCutoff  = 1,
+              qvalueCutoff  = 1,
+              readable      = TRUE)
+  data=GO_listDOWN[[k]]%>%head(n=10)
+  data$Description=factor(data$Description,levels=rev(data$Description))
+  GO_plot[[k]]=ggplot(data=data, aes(x=Description, y=Count)) +
+  geom_bar(stat="identity",aes(fill=p.adjust))  +scale_fill_gradient(low="blue",high="blue",
+                       limits = c(0, 0.05))+ coord_flip()+  guides(colour = guide_legend(override.aes = list(size=3)))+theme_bw()+ scale_x_discrete(labels = function(x) str_wrap(x, width = 35))+
+  ggtitle(paste0(k," ",year[[k]]))+
+  theme(axis.title.x=element_text(size=10,margin=margin(0,0,0,0)))+ 
+  theme(axis.title.y=element_text(size=10,vjust=0))+ 
+  theme(axis.text.x=element_text(size=10,margin=margin(3,0,10,0)))+ 
+  theme(axis.text.y=element_text(size=10,margin=margin(0,3,0,10)))+ 
+  theme(legend.title=element_text(size=10))+ theme(plot.title = element_text(size=12))+
+  theme(legend.text=element_text(size=12))+ theme(legend.position = "none")    
+}
+
+FigGOindivGVMIIDOWN=plot_grid(GO_plot[[1]],
+          GO_plot[[2]],
+          GO_plot[[3]],
+          GO_plot[[4]],
+          GO_plot[[5]],
+          GO_plot[[6]],ncol = 3, nrow = 2,align="hv")
+
+```
+
+
+```{r Global PCA}
+data=Reduce(merge, lapply(logcpm_list, function(x) data.frame(x, rn = row.names(x))))
+rownames(data)=data[,1]
+data=data[,-1]
+Dataset=c(rep("Llonch et al.",75),rep("Yu et al.",21),rep("Reyes et al.",20),rep("Hu et al.",14),rep("Takeuchi et al.",19),
+          rep("Ntostis et al.",21))
+names(Dataset)=c(`Llonch et al.`$run_accession,`Yu et al.`$run_accession,`Reyes et al.`$run_accession,
+                 `Hu et al.`$run_accession,`Takeuchi et al.`$run_accession,`Ntostis et al.`$run_accession)
+Maturation=c(`Llonch et al.`$Group,`Yu et al.`$Group,`Reyes et al.`$Group,
+             `Hu et al.`$Group,`Takeuchi et al.`$Group,`Ntostis et al.`$Group)
+names(Maturation)=c(`Llonch et al.`$run_accession,`Yu et al.`$run_accession,`Reyes et al.`$run_accession,
+                 `Hu et al.`$run_accession,`Takeuchi et al.`$run_accession,`Ntostis et al.`$run_accession)
+
+res.pca=PCAtools::pca(data,removeVar=0.1)
+PCA=as.data.frame(res.pca$rotated[,1:2])
+PCA$Dataset=factor(Dataset,levels=c("Reyes et al.","Yu et al.","Ntostis et al.","Llonch et al.","Hu et al.","Takeuchi et al."))
+PCA$Maturation=Maturation
+PCA=PCA%>%filter(Maturation%in%c("GV","MI","MII"))
+PCA$Maturation=factor(PCA$Maturation,levels=c("GV","MI","MII"))
+
+FigGlobalPCA=ggplot(PCA,aes(PC1,PC2))+ geom_point(size=2.5,shape=21,stroke = 0.75,aes(color=Dataset,fill=Maturation))  +xlab(paste0("PC1: ",round(res.pca$variance[1],0),"% variance")) +
+  ylab(paste0("PC2: ",round(res.pca$variance[2],0),"% variance"))+
+  theme_bw()+ scale_color_manual(values=c(
+           "Reyes et al."="#95D5B2",
+                                                          "Yu et al."="#90E0EF",
+                                                          "Ntostis et al."="#DDB892",
+                                                          "Llonch et al."="#FF5A5F",
+                                                          "Hu et al."="#FFC300",
+                                                          "Takeuchi et al."="#E0AAFF"),
+           labels=c("Reyes et al."="Reyes et al. 2021",
+                            "Yu et al."="Yu et al. 2020",
+                            "Ntostis et al."="Ntostis et al. 2017",
+                            "Llonch et al."="Llonch et al. 2021",
+                            "Hu et al."="Hu et al. 2022",
+                            "Takeuchi et al."="Takeuchi et al. 2022"))+
+  scale_fill_manual(values=c("GV"="white","MI"="#D0D0DB","MII"="#000000"))+
+  theme(axis.title.x=element_text(size=15))+  labs(shape='Maturation stage') +
+  theme(axis.title.y=element_text(size=15,vjust=0))+ 
+  theme(axis.text.x=element_text(size=10,margin=margin(3,0,10,0)))+ 
+  theme(axis.text.y=element_text(size=10,margin=margin(0,3,0,15)))+ 
+  theme(legend.title=element_text(size=15))+ 
+  theme(legend.text=element_text(size=12))
+
+```
+
+```{r PCA remove batch effects}
+
+library(sva)
+library(purrr)
+count_matrix <- data.matrix(cbind(Llonch_data,Yu_data,Reyes_data,
+                        Hu_data,Takeuchi_data,Ntostis_data))
+
+batch <- c(rep("Llonch et al.",75),rep("Yu et al.",21),rep("Reyes et al.",20),rep("Hu et al.",14),rep("Takeuchi et al.",19),rep("Ntostis et al.",21))
+group <- c(`Llonch et al.`$Group,`Yu et al.`$Group,`Reyes et al.`$Group,
+             `Hu et al.`$Group,`Takeuchi et al.`$Group,`Ntostis et al.`$Group)
+adjusted_counts <- ComBat_seq(count_matrix, batch=batch, group=group)
+
+Metadata_ALL <- data.frame(read_excel("Metadata_OVO.xlsx",sheet = "ALL"))
+rownames(Metadata_ALL)=Metadata_ALL$run_accession
+
+y <- DGEList(counts=adjusted_counts, genes=rownames(adjusted_counts))
+isexpr <- filterByExpr(y,group=Metadata_ALL$Group)
+y <- y[isexpr,]
+y <- calcNormFactors(y)
+design <- model.matrix(~ 0 + Group+Patient, data = Metadata_ALL)
+v <- voom(y,design,plot=FALSE)
+fit <- lmFit(v, design = design)
+contrastMatrix <- makeContrasts(GroupMII-GroupGV,levels=design)
+fit2 <- contrasts.fit(fit,contrastMatrix)
+fit2.de <- eBayes(fit2)
+resGVMII=limma::topTable(fit2.de, coef=1,n = Inf, adjust.method = "BH",confint=TRUE)
+logcpmALL=edgeR::cpm(y,prior.count=1,log=TRUE)
+
+res.pca=PCAtools::pca(logcpmALL,removeVar=0.1)
+PCA=as.data.frame(res.pca$rotated[,1:2])
+PCA=merge(PCA,Metadata_ALL,by.x=0,by.y="run_accession")
+rownames(PCA)=PCA$Row.names
+PCA$Maturation=factor(PCA$Group,levels=c("GV","MI","MII"))
+
+FigGlobalPCAbatch=ggplot(PCA,aes(PC1,PC2))+ geom_point(size=2.5,shape=21,stroke = 0.75,aes(color=Dataset,fill=Maturation))  +xlab(paste0("PC1: ",round(res.pca$variance[1],0),"% variance")) +
+  ylab(paste0("PC2: ",round(res.pca$variance[2],0),"% variance"))+
+  theme_bw()+ scale_color_manual(values=c(
+           "Reyes et al."="#95D5B2",
+                                                          "Yu et al."="#90E0EF",
+                                                          "Ntostis et al."="#DDB892",
+                                                          "Llonch et al."="#FF5A5F",
+                                                          "Hu et al."="#FFC300",
+                                                          "Takeuchi et al."="#E0AAFF"),
+           labels=c("Reyes et al."="Reyes et al. 2021",
+                            "Yu et al."="Yu et al. 2020",
+                            "Ntostis et al."="Ntostis et al. 2017",
+                            "Llonch et al."="Llonch et al. 2021",
+                            "Hu et al."="Hu et al. 2022",
+                            "Takeuchi et al."="Takeuchi et al. 2022"))+
+  scale_fill_manual(values=c("GV"="white","MI"="#D0D0DB","MII"="#000000"))+
+  theme(axis.title.x=element_text(size=15))+  labs(shape='Maturation stage') +
+  theme(axis.title.y=element_text(size=15,vjust=0))+ 
+  theme(axis.text.x=element_text(size=10,margin=margin(3,0,10,0)))+ 
+  theme(axis.text.y=element_text(size=10,margin=margin(0,3,0,15)))+ 
+  theme(legend.title=element_text(size=15))+ 
+  theme(legend.text=element_text(size=12))
+```
+
+
+```{r metaRNA-seq metaVolcano via Random Effect Model}
+
+plot_rem_adaptedBH <- function(meta_diffexp, jobname, outputfolder, genecol) {
+  meta_res=meta_diffexp@metaresult %>%
+    dplyr::mutate(randomP.adj=p.adjust(randomP,method="BH")) %>%
+    dplyr::mutate(signcon2 = ifelse(randomP.adj <= 0.05 & (signcon<=-6|signcon>=6), signcon, NA)) %>%
+    dplyr::mutate(Ci.ub = ifelse(randomP.adj <= 0.05 & (signcon<=-6|signcon>=6), randomCi.ub, NA)) %>%
+    dplyr::mutate(Ci.lb = ifelse(randomP.adj <= 0.05 & (signcon<=-6|signcon>=6), randomCi.lb, NA)) 
+  
+  ggplot(dplyr::arrange(meta_res, abs(randomSummary)),
+         aes(x = randomSummary, y = -log10(randomP), color = signcon2, 
+             text = !!rlang::sym(genecol))) +
+    geom_point(size = 0.6) +
+    scale_color_gradient2(midpoint=0, low="blue", mid="white", 
+                          high="red", na.value = "grey80") +
+    labs(x = "Fold-change",
+         y = "-log10(REM p-value)",
+         color = "Sign consistency") +
+    geom_errorbarh(aes(xmax = Ci.ub, xmin = Ci.lb, 
+                       color = signcon2)) +
+    theme_classic() +
+    theme(panel.border= element_blank()) +
+    theme(axis.text.x = element_text(angle = 0, vjust = 0.5)) +
+    theme(axis.line.x = element_line(color = "black", size = 0.6, 
+                                     lineend = "square"),
+          axis.line.y = element_line(color = "black", size = 0.6, 
+                                     lineend = "square"))
+}
+
+plot_rem_adaptedBH_log2FC <- function(meta_diffexp, jobname, outputfolder, genecol) {
+  meta_res=meta_diffexp@metaresult %>%
+    dplyr::mutate(randomP.adj=p.adjust(randomP,method="BH")) %>%
+    dplyr::mutate(signcon2 = ifelse(abs(randomSummary)>=1 & randomP.adj <= 0.05 & (signcon<=-6|signcon>=6), signcon, NA)) %>%
+    dplyr::mutate(Ci.ub = ifelse(abs(randomSummary)>=1 & randomP.adj <= 0.05 & (signcon<=-6|signcon>=6), randomCi.ub, NA)) %>%
+    dplyr::mutate(Ci.lb = ifelse(abs(randomSummary)>=1 & randomP.adj <= 0.05 & (signcon<=-6|signcon>=6), randomCi.lb, NA))
+  
+  ggplot(dplyr::arrange(meta_res, abs(randomSummary)),
+         aes(x = randomSummary, y = -log10(randomP), color = signcon2, 
+             text = !!rlang::sym(genecol))) +
+    geom_point(size = 0.6) +
+    scale_color_gradient2(midpoint=0, low="blue", mid="white", 
+                          high="red", na.value = "grey80") +
+    labs(x = expression("log"[2]*"FC (MII-GV)"),
+         y = expression("-log"[10]*"(REM p-value)"),
+         color = "Sign consistency") +
+    geom_errorbarh(aes(xmax = Ci.ub, xmin = Ci.lb, 
+                       color = signcon2)) +
+    theme_classic() +
+    theme(panel.border= element_blank()) +
+    theme(axis.text.x = element_text(angle = 0, vjust = 0.5)) +
+    theme(axis.line.x = element_line(color = "black", size = 0.6, 
+                                     lineend = "square"),
+          axis.line.y = element_line(color = "black", size = 0.6, 
+                                     lineend = "square"))
+}
+
+
+meta_diffexp=rem_mv(diffexp=res,
+            pcriteria="P.Value",
+            foldchangecol='logFC', 
+            genenamecol='genes',
+            geneidcol=NULL,
+            collaps=FALSE,
+            llcol='CI.L',
+            rlcol='CI.R',
+            vcol=NULL, 
+            cvar=TRUE,
+            metathr=0.01)
+
+plot_rem_adaptedBH(meta_diffexp,genecol='genes')
+
+FigVolcanoGVMII=plot_rem_adaptedBH_log2FC(meta_diffexp,genecol='genes')
+
+
+meta_res=meta_diffexp@metaresult %>%
+  dplyr::mutate(randomP.adj=p.adjust(randomP,method="BH")) %>%
+  filter(randomP.adj<0.05 & abs(randomSummary)>1) %>% filter(signcon<=-6|signcon>=6)
+
+sum(meta_res$randomSummary<0)
+sum(meta_res$randomSummary>0)
+
+sum(meta_res$randomSummary<0)/dim(meta_res)[1]
+sum(meta_res$randomSummary>0)/dim(meta_res)[1]
+
+universe=bitr(meta_diffexp@metaresult$genes,fromType = "SYMBOL",toType = "ENTREZID",OrgDb = org.Hs.eg.db)
+entrez=bitr(meta_res$genes[which(meta_res$randomSummary>0)],fromType = "SYMBOL",toType = "ENTREZID",OrgDb = org.Hs.eg.db)
+GO=enrichGO(gene          = entrez$ENTREZID,
+            universe      = universe$ENTREZID,
+            OrgDb         = org.Hs.eg.db,
+            ont           = "BP",
+            pAdjustMethod = "BH",
+            pvalueCutoff  = 1,
+            qvalueCutoff  = 1,
+            readable      = TRUE)
+data=GO%>%filter(p.adjust<0.05)%>%head(n=20)
+data$Description=factor(data$Description,levels=rev(data$Description))
+ggplot(data=data, aes(x=Description, y=Count)) +
+  geom_bar(stat="identity",aes(fill=p.adjust))  +
+  scale_fill_gradient(low="red",high="blue",limits = c(0, 0.05))+
+  coord_flip()+  guides(colour = guide_legend(override.aes = list(size=3)))+
+  theme_bw()+ scale_x_discrete(labels = function(x) str_wrap(x, width = 50))+
+  ggtitle("Up-regulated in MII")+
+  theme(axis.title.x=element_text(size=15,margin=margin(0,0,0,0)))+ 
+  theme(axis.title.y=element_text(size=15,vjust=0))+ 
+  theme(axis.text.x=element_text(size=10,margin=margin(3,0,10,0)))+ 
+  theme(axis.text.y=element_text(size=10,margin=margin(0,3,0,10)))+ 
+  theme(legend.title=element_text(size=15))+ 
+  theme(legend.text=element_text(size=12))
+cat(rownames(GO%>%filter(p.adjust<0.05)%>%as.data.frame()),sep="\n")
+
+dataGOmetaUP=GO
+
+library(rrvgo)
+
+GOs=rownames(GO%>%filter(p.adjust<0.05)%>%as.data.frame())
+
+simMatrix <- calculateSimMatrix(GOs,
+                                orgdb="org.Hs.eg.db",
+                                ont="BP",
+                                method="Rel")
+
+scores=setNames(rep(0.05,length(GOs)),GOs)
+reducedTerms <- reduceSimMatrix(simMatrix,
+                                scores,
+                                threshold=0.7,
+                                orgdb="org.Hs.eg.db")
+pdf(file = "GO_meta_UP.pdf",width=20,height = 8)
+treemapPlot(reducedTerms)
+dev.off()
+
+universe=bitr(meta_diffexp@metaresult$genes,fromType = "SYMBOL",toType = "ENTREZID",OrgDb = org.Hs.eg.db)
+entrez=bitr(meta_res$genes[which(meta_res$randomSummary<0)],fromType = "SYMBOL",toType = "ENTREZID",OrgDb = org.Hs.eg.db)
+GO=enrichGO(gene          = entrez$ENTREZID,
+            universe      = universe$ENTREZID,
+            OrgDb         = org.Hs.eg.db,
+            ont           = "BP",
+            pAdjustMethod = "BH",
+            pvalueCutoff  = 1,
+            qvalueCutoff  = 1,
+            readable      = TRUE)
+data=GO%>%filter(p.adjust<0.05)%>%head(n=20)
+data$Description=factor(data$Description,levels=rev(data$Description))
+ggplot(data=data, aes(x=Description, y=Count)) +
+  geom_bar(stat="identity",aes(fill=p.adjust))  +
+  scale_fill_gradient(low="red",high="blue",limits = c(0, 0.05))+
+  coord_flip()+  guides(colour = guide_legend(override.aes = list(size=3)))+
+  theme_bw()+ scale_x_discrete(labels = function(x) str_wrap(x, width = 50))+
+  ggtitle("Down-regulated in MII")+
+  theme(axis.title.x=element_text(size=15,margin=margin(0,0,0,0)))+ 
+  theme(axis.title.y=element_text(size=15,vjust=0))+ 
+  theme(axis.text.x=element_text(size=10,margin=margin(3,0,10,0)))+ 
+  theme(axis.text.y=element_text(size=10,margin=margin(0,3,0,10)))+ 
+  theme(legend.title=element_text(size=15))+ 
+  theme(legend.text=element_text(size=12))
+cat(rownames(GO%>%filter(p.adjust<0.05)%>%as.data.frame()),sep="\n")
+
+dataGOmetaDOWN=GO
+
+library(rrvgo)
+
+GOs=rownames(GO%>%filter(p.adjust<0.05)%>%as.data.frame())
+
+simMatrix <- calculateSimMatrix(GOs,
+                                orgdb="org.Hs.eg.db",
+                                ont="BP",
+                                method="Rel")
+
+scores=setNames(rep(0.05,length(GOs)),GOs)
+reducedTerms <- reduceSimMatrix(simMatrix,
+                                scores,
+                                threshold=0.7,
+                                orgdb="org.Hs.eg.db")
+pdf(file = "GO_meta_DOWN.pdf",width=20,height = 8)
+treemapPlot(reducedTerms)
+dev.off()
+```
+
+```{r, plots META}
+plot(draw_forest(remres=meta_diffexp,
+            gene="TMEM251",
+            genecol="genes", 
+            foldchangecol="logFC",
+            llcol="CI.L", 
+            rlcol="CI.R"))
+
+plot(draw_forest(remres=meta_diffexp,
+            gene="TMEM128",
+            genecol="genes", 
+            foldchangecol="logFC",
+            llcol="CI.L", 
+            rlcol="CI.R"))
+
+votecount_mv_adapted <- function(diffexp=list(), pcriteria="pvalue", foldchangecol="Log2FC", genenamecol="Symbol", 
+                         geneidcol=NULL, pvalue=0.05, foldchange=0, 
+                         metathr=0.01, collaps=FALSE, 
+                         jobname="MetaVolcano", outputfolder=".", 
+                         draw="HTML") {
+  
+  if(!draw %in% c('PDF', 'HTML')) {
+    
+    stop("Oops! Seems like you did not provide a right 'draw' parameter. 
+              Try 'PDF' or 'HTML'")
+    
+  }
+  
+  nstud <- length(diffexp)
+  
+  # --- Defining DEGs
+  diffexp <- lapply(diffexp, function(...) deg_def(..., pcriteria, 
+                                                   foldchangecol, 
+                                                   pvalue, foldchange))
+  
+  if (collaps) {
+    # --- Removing non-named genes
+    diffexp <- lapply(diffexp, function(g) {
+      g %>%
+        dplyr::filter(!!as.name(genenamecol) != "") %>%
+        dplyr::filter(!is.na(!!as.name(genenamecol))) %>%
+        dplyr::filter(!!as.name(genenamecol) != "NA")
+    })
+    
+    # --- Collapsing redundant geneIDs. Rataining the geneID with the 
+    # --- smallest pcriteria
+    diffexp <- lapply(diffexp, function(g) {
+      collapse_deg(g, genenamecol, pcriteria)
+    })
+    
+    # --- Subsetting the diffexp inputs
+    diffexp <- lapply(diffexp, function(...) dplyr::select(...,
+                                                           dplyr::matches(paste(c(pcriteria, foldchangecol,
+                                                                                  genenamecol, '^deg$'), collapse = '|'))))
+    
+    # Setting data for DEG by study visualization
+    bardat <- set_degbar_data(diffexp)
+    
+    # --- merging DEG results
+    diffexp <- rename_col(diffexp, genenamecol)
+    meta_diffexp <- Reduce(function(...) merge(..., by = genenamecol, 
+                                               all = TRUE), diffexp)
+    genecol <- genenamecol
+    
+  } else {
+    
+    if(is.null(geneidcol)) {
+      geneidcol <- genenamecol
+    }
+    
+    # Testing if geneIDs are unique
+    gid <- vapply(diffexp, function(g) {
+      length(unique(g[[geneidcol]])) == nrow(g)
+    }, 
+    logical(1))
+    
+    if(all(gid)) {
+      
+      # --- Subsetting the diffexp inputs
+      diffexp <- lapply(diffexp, function(...) dplyr::select(...,
+                                                             dplyr::matches(paste(c(pcriteria, foldchangecol,
+                                                                                    geneidcol, '^deg$'), collapse = '|'))))
+      # DEG by study data setting
+      bardat <- set_degbar_data(diffexp)
+      
+      # --- merging DEG results	
+      diffexp <- rename_col(diffexp, geneidcol)
+      meta_diffexp <- Reduce(function(...) merge(..., 
+                                                 by = geneidcol, 
+                                                 all = TRUE), diffexp)
+      
+      genecol <- geneidcol
+      
+    } else {
+      
+      stop("the geneidcol contains duplicated values, consider to 
+		 set collaps=TRUE")
+      
+    }
+  }    
+  # --- Defining new vars for visualization
+  meta_diffexp %>%
+    dplyr::select(dplyr::matches("deg_")) %>%
+    data.matrix -> n_deg
+  
+  meta_diffexp[['ndeg']] <- rowSums(n_deg^2, na.rm = TRUE)
+  meta_diffexp[['ddeg']] <- rowSums(n_deg, na.rm = TRUE)
+  
+  # Highlighting the top perturbed genes
+  meta_diffexp <- meta_diffexp %>%
+    dplyr::mutate(idx = ddeg*ndeg)
+  meta_diffexp <- meta_diffexp %>%
+    dplyr::mutate(degvcount = ifelse(idx < quantile(meta_diffexp[['idx']], 
+                                                    metathr/2), 
+                                     'Down-regulated in MII',
+                                     ifelse(idx > quantile(meta_diffexp[['idx']], 
+                                                           1-(metathr/2)), 
+                                            'Up-regulated in MII', 'Unperturbed'))) %>%
+    dplyr::arrange(-abs(idx))
+  
+  # --- Drawing DEGs by dataset
+  gg <- draw_degbar_adapted(bardat)
+  ff <- draw_cum_freq(meta_diffexp, nstud)
+  gf <- plot_grid(gg, ff, align="h")
+  mv <- plot_mv(meta_diffexp, nstud, genecol, FALSE, NULL)
+  
+  if(draw == "HTML") {
+    
+    # --- Writing html device for offline visualization
+    saveWidget(as_widget(ggplotly(gg)), 
+               paste0(normalizePath(outputfolder), "/deg_by_study_", 
+                      jobname, ".html"))
+    saveWidget(as_widget(ggplotly(ff)), 
+               paste0(normalizePath(outputfolder), "/deg_InvCumDist_", 
+                      jobname, ".html"))
+    saveWidget(as_widget(ggplotly(mv)), 
+               paste0(normalizePath(outputfolder), 
+                      '/votecounting_metavolcano_', jobname, ".html"))
+    
+  } else if(draw == "PDF") {
+    
+    # --- Writing PDF visualization
+    pdf(paste0(normalizePath(outputfolder),
+               "/deg_by_study_", jobname,
+               ".pdf"), width = 7, height = 4)
+    plot(gf)
+    dev.off()
+    
+    pdf(paste0(normalizePath(outputfolder),
+               "/votecounting_metavolcano_", jobname,
+               ".pdf"), width = 4, height = 5)
+    plot(mv)
+    dev.off()
+    
+  }
+  
+  # Return genes that were DE in at least one study
+  # Set vote-counting result
+  
+  icols <- paste(c(genecol, pcriteria, foldchangecol), collapse="|")
+  rcols <- paste(c(genecol, "deg_", "ddeg", "ndeg", "idx", "degvcount"), 
+                 collapse="|")
+  result <- new('MetaVolcano', 
+                input=dplyr::select(meta_diffexp, 
+                                    dplyr::matches(icols)),
+                inputnames=names(diffexp),
+                metaresult=dplyr::select(meta_diffexp,
+                                         dplyr::matches(rcols)),
+                MetaVolcano=mv,
+                degfreq=plot_grid(gf)
+  )
+  
+  return(result)
+}
+
+pcriteria="adj.P.Val"
+foldchangecol="logFC"
+genenamecol="genes" 
+pvalue=0.05
+foldchange=1
+geneidcol=NULL
+metathr=0.01
+collaps=FALSE
+jobname="MetaVolcano"
+
+diffexp <- lapply(res, function(...) deg_def(..., pcriteria, 
+                                                   foldchangecol, 
+                                                   pvalue, foldchange))
+diffexp <- lapply(diffexp, function(...) dplyr::select(...,
+                                                             dplyr::matches(paste(c(pcriteria, foldchangecol,
+                                                                                    geneidcol, '^deg$'), collapse = '|'))))
+
+bardat <- set_degbar_data(diffexp)
+
+      
+draw_degbar_adapted <- function(degbar_data) {
+  
+  degbar_data$dataset=factor(degbar_data$dataset,levels=c("Reyes et al.","Yu et al.","Ntostis et al.","Llonch et al.","Hu et al.","Takeuchi et al."))
+  degbar_data$Regulation=str_replace_all(degbar_data$Regulation,"c.Downregulated","Down-regulated in MII")
+  degbar_data$Regulation=str_replace_all(degbar_data$Regulation,"a.Upregulated","Up-regulated in MII")
+  degbar_data$Regulation=str_replace_all(degbar_data$Regulation,"b.Unperturbed","Unchanged")
+  degbar_data$Regulation=factor(degbar_data$Regulation,levels=c("Down-regulated in MII","Unchanged","Up-regulated in MII"))
+  ggplot(degbar_data, aes(dataset)) +
+    geom_bar(aes(fill = Regulation)) +
+    theme_classic() +
+    theme(panel.border= element_blank()) +
+    theme(axis.text.x = element_text(angle=20, vjust = 0.5)) +
+    theme(axis.line.x = element_line(color="black", size = 0.6, 
+                                     lineend = "square"),
+          axis.line.y = element_line(color="black", size = 0.6, 
+                                     lineend = "square")) +
+    guides(colour = guide_colorbar()) +
+    labs(x = "Datasets",
+         y = "Number of genes",fill="Expression") +
+    scale_fill_manual(values=c("#377EB8","grey","#E41A1C"   ))+
+  scale_x_discrete(labels=c("Reyes et al."="Reyes et al. 2021",
+                            "Yu et al."="Yu et al. 2020",
+                            "Ntostis et al."="Ntostis et al. 2017",
+                            "Llonch et al."="Llonch et al. 2021",
+                            "Hu et al."="Hu et al. 2022",
+                            "Takeuchi et al."="Takeuchi et al. 2022"))+
+  theme(axis.title.x=element_text(size=15,margin=margin(0,0,0,0)))+ 
+  theme(axis.title.y=element_text(size=15,vjust=0))+ 
+  theme(axis.text.x=element_text(size=10,margin=margin(3,0,10,0)))+ 
+  theme(axis.text.y=element_text(size=10,margin=margin(0,3,0,10)))+ 
+  theme(legend.title=element_text(size=15))+ 
+  theme(legend.text=element_text(size=12))
+}
+
+meta_degs_vote=votecount_mv_adapted(diffexp=res,pcriteria='adj.P.Val',
+                               foldchangecol='logFC',
+                               genenamecol='genes',
+                               geneidcol=NULL,
+                               pvalue=0.05,
+                               foldchange=1, 
+                               metathr=0.01,
+                               collaps=FALSE,
+                               jobname="MetaVolcano")
+
+FigDEGbarGVMII=draw_degbar_adapted(bardat)
+
+plot(votecount_mv_adapted(diffexp=res,pcriteria='adj.P.Val',
+                               foldchangecol='logFC',
+                               genenamecol='genes',
+                               geneidcol=NULL,
+                               pvalue=0.05,
+                               foldchange=1, 
+                               metathr=0.01,
+                               collaps=FALSE,
+                               jobname="MetaVolcano")@MetaVolcano)
+
+```
+
+
+```{r, Plot correlations}
+
+library(ggplot2)
+library(ggcorrplot)
+
+GV=list()
+MII=list()
+
+for (k in c("Reyes et al.","Yu et al.","Ntostis et al.","Llonch et al.","Hu et al.","Takeuchi et al.")){
+  GV[[k]]=data.frame(rowMeans(logcpm_list[[k]][,GVMII[[k]]$run_accession[which(GVMII[[k]]$Group=="GV")]]))
+  MII[[k]]=data.frame(rowMeans(logcpm_list[[k]][,GVMII[[k]]$run_accession[which(GVMII[[k]]$Group=="MII")]]))
+}
+
+df <- Reduce(
+  function(x, y) merge(x, y, by = "id", all = T),
+  lapply(GV, function(x) { x$id <- rownames(x); x }))
+colnames(df) <- c("id", names(GV))
+rownames(df)=df$id
+df=df[,-1]
+
+cor <- cor(df,use = "complete.obs")
+cor=round(cor, 2)
+
+FigCorGV=ggcorrplot(cor, 
+           hc.order = F, 
+           type = "lower",
+           lab = TRUE,
+           colors = c("white", "yellow","dodgerblue"),legend.title ="Correlation")+ 
+  labs(title = "GV")+
+  scale_x_discrete(labels=c("Reyes et al."="Reyes et al. 2021",
+                            "Yu et al."="Yu et al. 2020",
+                            "Ntostis et al."="Ntostis et al. 2017",
+                            "Llonch et al."="Llonch et al. 2021",
+                            "Hu et al."="Hu et al. 2022",
+                            "Takeuchi et al."="Takeuchi et al. 2022"))+
+  scale_y_discrete(labels=c("Reyes et al."="Reyes et al. 2021",
+                            "Yu et al."="Yu et al. 2020",
+                            "Ntostis et al."="Ntostis et al. 2017",
+                            "Llonch et al."="Llonch et al. 2021",
+                            "Hu et al."="Hu et al. 2022",
+                            "Takeuchi et al."="Takeuchi et al. 2022"))
+
+
+df <- Reduce(
+  function(x, y) merge(x, y, by = "id", all = T),
+  lapply(MII, function(x) { x$id <- rownames(x); x }))
+colnames(df) <- c("id", names(MII))
+rownames(df)=df$id
+df=df[,-1]
+
+cor <- cor(df,use = "complete.obs")
+cor=round(cor, 2)
+
+FigCorMII=ggcorrplot(cor, 
+           hc.order = F, 
+           type = "lower",
+           lab = TRUE,
+           colors = c("white","yellow","dodgerblue"),legend.title ="Correlation")+ 
+  labs(title = "MII")+
+  scale_x_discrete(labels=c("Reyes et al."="Reyes et al. 2021",
+                            "Yu et al."="Yu et al. 2020",
+                            "Ntostis et al."="Ntostis et al. 2017",
+                            "Llonch et al."="Llonch et al. 2021",
+                            "Hu et al."="Hu et al. 2022",
+                            "Takeuchi et al."="Takeuchi et al. 2022"))+
+  scale_y_discrete(labels=c("Reyes et al."="Reyes et al. 2021",
+                            "Yu et al."="Yu et al. 2020",
+                            "Ntostis et al."="Ntostis et al. 2017",
+                            "Llonch et al."="Llonch et al. 2021",
+                            "Hu et al."="Hu et al. 2022",
+                            "Takeuchi et al."="Takeuchi et al. 2022"))
+
+
+
+all=append(GV,MII)
+
+df <- Reduce(
+  function(x, y) merge(x, y, by = "id", all = T),
+  lapply(all, function(x) { x$id <- rownames(x); x }))
+colnames(df) <- c("id","Llonch_GV","Yu_GV","Reyes_GV","Hu_GV","Takeuchi_GV","Ntostis_GV",
+                  "Llonch_MII","Yu_MII","Reyes_MII","Hu_MII","Takeuchi_MII","Ntostis_MII")
+rownames(df)=df$id
+df=df[,-1]
+
+cor <- cor(df,use = "complete.obs")
+cor=round(cor, 2)
+
+ggcorrplot(cor, 
+           hc.order = F, 
+           type = "lower",
+           lab = TRUE,
+           colors = c("white", "red","green"))
+
+```
+
+```{r, heatmap DEGs}
+library(pheatmap)
+
+meta_signif=lapply(logcpm_list,function(df) {
+  df=df[which(rownames(df)%in%meta_res$genes[1:3275]),]
+})
+
+library(DescTools)
+
+df=MultMerge(meta_signif[[1]],
+          meta_signif[[2]],
+          meta_signif[[3]],
+          meta_signif[[4]],
+          meta_signif[[5]],
+          meta_signif[[6]],
+          all.x = TRUE, all.y = TRUE, by = NULL)
+
+my_sample_col <- data.frame("Maturation"=c(`Llonch et al.`$Group,`Yu et al.`$Group,`Reyes et al.`$Group,
+                 `Hu et al.`$Group,`Takeuchi et al.`$Group,`Ntostis et al.`$Group),"Dataset"=Metadata_ALL[,"Dataset"])
+row.names(my_sample_col) <- c(`Llonch et al.`$run_accession,`Yu et al.`$run_accession,`Reyes et al.`$run_accession,
+                 `Hu et al.`$run_accession,`Takeuchi et al.`$run_accession,`Ntostis et al.`$run_accession)
+
+df=df[,rownames(my_sample_col%>%filter(Maturation!="MI"))] #enlever MI
+
+df[is.na(df)] = 0
+
+cal_z_score <- function(x){
+  (x - mean(x)) / sd(x)
+}
+
+data_subset_norm <- t(apply(df, 1, cal_z_score))
+#pheatmap(data_subset_norm)
+
+
+
+my_sample_col$Dataset=str_replace_all(my_sample_col$Dataset,c("Reyes et al."="Reyes et al. 2021",
+                            "Yu et al."="Yu et al. 2020",
+                            "Ntostis et al."="Ntostis et al. 2017",
+                            "Llonch et al."="Llonch et al. 2021",
+                            "Hu et al."="Hu et al. 2022",
+                            "Takeuchi et al."="Takeuchi et al. 2022"))
+FigHeatmapGVMII=pheatmap(data_subset_norm, annotation_col = my_sample_col,
+         annotation_colors =list(
+  Maturation = c(MII="black", GV="white"),
+   Dataset = c("Reyes et al. 2021"="#95D5B2",
+                                                          "Yu et al. 2020"="#90E0EF",
+                                                          "Ntostis et al. 2017"="#DDB892",
+                                                          "Llonch et al. 2021"="#FF5A5F",
+                                                          "Hu et al. 2022"="#FFC300",
+                                                          "Takeuchi et al. 2022"="#E0AAFF")))
+
+```
+
+
+```{r, degradation}
+
+df=data.frame(GV=rowMeans(logcpmALL[,rownames(Metadata_ALL%>%filter(Group=="GV"))]),
+                MII=rowMeans(logcpmALL[,rownames(Metadata_ALL%>%filter(Group=="MII"))]))
+df$percent=(df$MII-df$GV)/df$GV
+
+ggplot(df,aes(x=GV,y=MII,color=))+geom_point()
+
+
+
+df=data.frame(logFC=meta_diffexp@metaresult$randomSummary,
+Pval=-log10(meta_diffexp@metaresult$randomP),
+Degradation=2^(meta_diffexp@metaresult$randomSummary) * 100 -100)
+
+df%>%filter(Degradation<0)%>%select(Degradation)%>%colMeans()
+
+FigDegradationHisto=ggplot(df%>%filter(Degradation<0), aes(x=Degradation,fill = ..x..)) + geom_histogram(show.legend = FALSE) +theme_classic() +
+  scale_fill_gradient2(name = "% of degradation", low = "#023E8A", high = "#0096C7")+ylab("Number of genes")+xlab("% of degradation")+ 
+  geom_vline(xintercept=-52.78228 , linetype='dashed', color='black', size=1)+
+  theme(panel.border= element_blank()) +
+  theme(axis.text.x = element_text(angle = 0, vjust = 0.5)) +
+  theme(axis.line.x = element_line(color = "black", size = 0.6, 
+                                   lineend = "square"),
+        axis.line.y = element_line(color = "black", size = 0.6, 
+                                   lineend = "square"))
+
+
+df$Degradation=ifelse(df$Degradation>=0,"Stable",
+                  ifelse(df$Degradation>=-30,"<30% degraded",
+                         ifelse(df$Degradation>=-50,"<50% degraded",
+                                ifelse(df$Degradation>=-70,"<70% degraded",">70% degraded"))))
+table(df$Degradation)
+FigDegradationVolcano=ggplot(df,aes(x=logFC,y=Pval,color=Degradation))+geom_point()+labs(x = "Fold-change",
+                                                              y = "-log10(REM p-value)") +
+  scale_color_manual(values=c("Stable"="grey","<30% degraded"="#CAF0F8","<50% degraded"="#0096C7",
+                              "<70% degraded"="#023E8A",">70% degraded"="#03045E"))+
+  theme_classic() +
+  theme(panel.border= element_blank()) +
+  theme(axis.text.x = element_text(angle = 0, vjust = 0.5)) +
+  theme(axis.line.x = element_line(color = "black", size = 0.6, 
+                                   lineend = "square"),
+        axis.line.y = element_line(color = "black", size = 0.6, 
+                                   lineend = "square"))
+
+
+df=data.frame(logFC=meta_diffexp@metaresult$randomSummary,
+              Pval=-log10(meta_diffexp@metaresult$randomP),
+              Degradation=2^(meta_diffexp@metaresult$randomSummary) * 100 -100)
+
+
+GV=mean(colSums(logcpmALL[,rownames(Metadata_ALL%>%filter(Group=="GV"))]))
+MII=mean(colSums(logcpmALL[,rownames(Metadata_ALL%>%filter(Group=="MII"))]))
+(GV-MII)/GV*100
+
+df_summary <- data.frame(category=c(rep("GV","87"),rep("MII",70)),value=c(colSums(logcpmALL[,rownames(Metadata_ALL%>%filter(Group=="GV"))]),colSums(logcpmALL[,rownames(Metadata_ALL%>%filter(Group=="MII"))]))) %>%
+  group_by(category) %>%
+  summarize(mean=mean(value),
+            sd=sd(value))
+
+FigDegradationBarplot=ggplot(df_summary) +
+    
+    geom_errorbar(aes(x=category, ymin=mean-sd, ymax=mean+sd), width=0.3, color='black')+
+  geom_bar(aes(x=category, y=mean,fill=category), stat='identity',width=0.3) +
+  scale_fill_manual(values=c(MII="black", GV="white"))+
+  theme_classic() + ylab("Total normalized counts")+xlab("Maturation")+
+  theme(panel.border= element_blank()) +
+  theme(axis.text.x = element_text(angle = 0, vjust = 0.5)) +
+  theme(axis.line.x = element_line(color = "black", size = 0.6, 
+                                   lineend = "square"),
+        axis.line.y = element_line(color = "black", size = 0.6, 
+                                   lineend = "square"))+guides(fill = "none")
+
+t.test(colSums(logcpmALL[,rownames(Metadata_ALL%>%filter(Group=="GV"))]),
+       colSums(logcpmALL[,rownames(Metadata_ALL%>%filter(Group=="MII"))]))
+
+FigDegradation=plot_grid(FigDegradationVolcano,FigDegradationHisto,FigDegradationBarplot,NULL,ncol = 2, nrow = 2,align="hv")
+
+```
+

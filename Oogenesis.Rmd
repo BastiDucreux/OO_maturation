@@ -1,0 +1,622 @@
+---
+title: "Oogenesis"
+output: html_document
+date: "2023-08-17"
+---
+
+```{r loading data, include=FALSE}
+colnames(Zhang_data)==rownames(`Zhang et al.`) #check right order
+`Zhang et al.`$Patient=substr(`Zhang et al.`$Sample,1,1)
+y <- DGEList(counts=Zhang_data, genes=rownames(Zhang_data),group=`Zhang et al.`$Group)
+isexpr <- filterByExpr(y,group=`Zhang et al.`$Group)
+y <- y[isexpr,]
+y <- calcNormFactors(y)
+design <- model.matrix(~ 0 + Group, data = `Zhang et al.`)
+v <- voom(y,design,plot=FALSE)
+fit <- lmFit(v, design)
+contrastMatrix <- makeContrasts(GroupPrimordial_follicle-(GroupPrimary_follicle+GroupSecondary_follicle+GroupAntral_follicle)/3,
+                                GroupPrimary_follicle-(GroupPrimordial_follicle+GroupSecondary_follicle+GroupAntral_follicle)/3,
+                                GroupSecondary_follicle-(GroupPrimary_follicle+GroupPrimordial_follicle+GroupAntral_follicle)/3,
+                                GroupAntral_follicle-(GroupPrimary_follicle+GroupPrimordial_follicle+GroupSecondary_follicle)/3,levels=design)
+fit2 <- contrasts.fit(fit,contrastMatrix)
+fit2.de <- eBayes(fit2)
+resZhangPrimordial=limma::topTable(fit2.de, coef=1,n = Inf, adjust.method = "BH",confint=TRUE)
+resZhangPrimary=limma::topTable(fit2.de, coef=2,n = Inf, adjust.method = "BH",confint=TRUE)
+resZhangSecondary=limma::topTable(fit2.de, coef=3,n = Inf, adjust.method = "BH",confint=TRUE)
+resZhangAntral=limma::topTable(fit2.de, coef=4,n = Inf, adjust.method = "BH",confint=TRUE)
+
+logcpm_Zhang=edgeR::cpm(y,prior.count=1,log=TRUE)
+
+`Zhang et al.`$Group=str_replace(`Zhang et al.`$Group,"_"," ")
+`Zhang et al.`$Group=factor(`Zhang et al.`$Group,levels=c("Primordial follicle","Primary follicle",
+                                                 "Secondary follicle","Antral follicle"))
+```
+
+```{r, PCA}
+
+res.pca=PCAtools::pca(logcpm_Zhang,removeVar=0.1)
+PCA=as.data.frame(res.pca$rotated[,1:2])
+PCA$Maturation_stage=`Zhang et al.`$Group
+FigPCAZhang=ggplot(PCA,aes(PC1,PC2))+ geom_point(size=2.5,stroke = 0,aes(color=Maturation_stage))  +xlab(paste0("PC1: ",round(res.pca$variance[1],0),"% variance")) +
+  ylab(paste0("PC2: ",round(res.pca$variance[2],0),"% variance"))+
+  theme_bw()+ labs(color = "Follicle stage")+
+  scale_color_manual(values=c("Primordial follicle"="#FF5A5F",
+                              "Primary follicle"="#90E0EF",
+                              "Secondary follicle"="#95D5B2",
+                              "Antral follicle"="#FFC300"))+
+  theme(axis.title.x=element_text(size=15))+ 
+  theme(axis.title.y=element_text(size=15,vjust=0))+ 
+  theme(axis.text.x=element_text(size=10,margin=margin(3,0,10,0)))+ 
+  theme(axis.text.y=element_text(size=10,margin=margin(0,3,0,15)))+ 
+  theme(legend.title=element_text(size=15))+ 
+  theme(legend.text=element_text(size=12))
+```
+
+
+```{r, heatmap}
+
+library(pheatmap)
+
+resZhangPrimordial.adj=dplyr::filter(resZhangPrimordial,resZhangPrimordial$`adj.P.Val`<0.05 & abs(resZhangPrimordial$logFC)>1)
+resZhangPrimary.adj=dplyr::filter(resZhangPrimary,resZhangPrimary$`adj.P.Val`<0.05 & abs(resZhangPrimary$logFC)>1)
+resZhangSecondary.adj=dplyr::filter(resZhangSecondary,resZhangSecondary$`adj.P.Val`<0.05 & abs(resZhangSecondary$logFC)>1)
+resZhangAntral.adj=dplyr::filter(resZhangAntral,resZhangAntral$`adj.P.Val`<0.05 & abs(resZhangAntral$logFC)>1)
+
+resZhangPrimordial.adj=resZhangPrimordial.adj[order(resZhangPrimordial.adj$logFC),]
+resZhangPrimary.adj=resZhangPrimary.adj[order(resZhangPrimary.adj$logFC),]
+resZhangSecondary.adj=resZhangSecondary.adj[order(resZhangSecondary.adj$logFC),]
+resZhangAntral.adj=resZhangAntral.adj[order(resZhangAntral.adj$logFC),]
+
+meta_signif=logcpm_Zhang[unique(c(resZhangPrimordial.adj$genes,resZhangPrimary.adj$genes,resZhangSecondary.adj$genes,resZhangAntral.adj$genes)),]
+my_sample_col <- data.frame(`Zhang et al.`$Group)
+row.names(my_sample_col) <- `Zhang et al.`$run_accession
+colnames(my_sample_col) = "Follicle stage"
+
+df=meta_signif
+
+df[is.na(df)] = 0
+
+cal_z_score <- function(x){
+  (x - mean(x)) / sd(x)
+}
+
+data_subset_norm <- t(apply(df, 1, cal_z_score))
+
+#sans cluster
+FigHeatmapZhang=pheatmap(data_subset_norm, cluster_cols=TRUE, cluster_rows=TRUE,annotation_col = my_sample_col,color=colorRampPalette(c("blue","white","red"))(100),
+         annotation_colors =list(
+           `Follicle stage` = c("Primordial follicle"="#FF5A5F",
+                       "Primary follicle"="#90E0EF",
+                       "Secondary follicle"="#95D5B2",
+                       "Antral follicle"="#FFC300")))
+#avec patient
+
+my_sample_col <- data.frame("Follicule stage"=`Zhang et al.`$Group,"Patient"=`Zhang et al.`$Patient)
+row.names(my_sample_col) <- `Zhang et al.`$run_accession
+
+pheatmap(data_subset_norm, cluster_cols=TRUE, cluster_rows=TRUE,annotation_col = my_sample_col,color=colorRampPalette(c("blue","white","red"))(100),
+         annotation_colors =list(
+           Dataset = c("Primordial follicle"="#FF5A5F",
+                       "Primary follicle"="#90E0EF",
+                       "Secondary follicle"="#95D5B2",
+                       "Antral follicle"="#FFC300")))
+```
+
+
+```{r, GO par groupe}
+
+listGO=list(
+PrimordialUP=bitr(resZhangPrimordial.adj$genes[resZhangPrimordial.adj$logFC>0],fromType = "SYMBOL",toType = "ENTREZID",OrgDb = org.Hs.eg.db)$ENTREZID,
+PrimordialDOWN=bitr(resZhangPrimordial.adj$genes[resZhangPrimordial.adj$logFC<0],fromType = "SYMBOL",toType = "ENTREZID",OrgDb = org.Hs.eg.db)$ENTREZID,
+
+PrimaryUP=bitr(resZhangPrimary.adj$genes[resZhangPrimary.adj$logFC>0],fromType = "SYMBOL",toType = "ENTREZID",OrgDb = org.Hs.eg.db)$ENTREZID,
+PrimaryDOWN=bitr(resZhangPrimary.adj$genes[resZhangPrimary.adj$logFC<0],fromType = "SYMBOL",toType = "ENTREZID",OrgDb = org.Hs.eg.db)$ENTREZID,
+
+SecondaryUP=bitr(resZhangSecondary.adj$genes[resZhangSecondary.adj$logFC>0],fromType = "SYMBOL",toType = "ENTREZID",OrgDb = org.Hs.eg.db)$ENTREZID,
+SecondaryDOWN=bitr(resZhangSecondary.adj$genes[resZhangSecondary.adj$logFC<0],fromType = "SYMBOL",toType = "ENTREZID",OrgDb = org.Hs.eg.db)$ENTREZID,
+
+AntralUP=bitr(resZhangAntral.adj$genes[resZhangAntral.adj$logFC>0],fromType = "SYMBOL",toType = "ENTREZID",OrgDb = org.Hs.eg.db)$ENTREZID,
+AntralDOWN=bitr(resZhangAntral.adj$genes[resZhangAntral.adj$logFC<0],fromType = "SYMBOL",toType = "ENTREZID",OrgDb = org.Hs.eg.db)$ENTREZID)
+
+universe=bitr(rownames(logcpm_Zhang),fromType = "SYMBOL",toType = "ENTREZID",OrgDb = org.Hs.eg.db)
+
+
+ck <- compareCluster(geneCluster = listGO, fun = enrichGO,OrgDb = org.Hs.eg.db,universe=universe$ENTREZID,ont           = "BP",
+              pAdjustMethod = "BH")
+FigCompareClusterZhang=clusterProfiler::dotplot(ck,label_format=50)+ scale_y_discrete(labels = function(x) str_wrap(x, width = 60))+
+  labs(color="Adjusted p-value")+
+  theme(axis.title.x=element_text(size=15,margin=margin(0,0,0,0)))+ 
+  theme(axis.title.y=element_text(size=15,vjust=0))+ 
+  theme(axis.text.x=element_text(size=10,margin=margin(3,0,10,0)))+ 
+  theme(axis.text.y=element_text(size=10,margin=margin(0,3,0,10)))+ 
+  theme(legend.title=element_text(size=15))+ 
+  theme(legend.text=element_text(size=12))
+```
+
+```{r, clustering pseudotime}
+library(slingshot)
+library(SingleCellExperiment)
+library(tradeSeq)
+library(tibble)
+library(tidyverse)
+library(phateR)
+Sys.setenv(RETICULATE_PYTHON = "/usr/local/bin/python3")
+reticulate::py_discover_config(required_module="phate")
+
+phate_output <- phate(t(logcpm_Zhang),ndim=3)
+clusters_phate=cluster_phate(phate_output)
+phate_output <- as.matrix(phate_output)
+colnames(x = phate_output) <- paste0("PHATE_", 1:ncol(x = phate_output))
+
+sce <- SingleCellExperiment(
+  assays = list(counts = as.matrix(Zhang_data[rownames(logcpm_Zhang),])),
+  colData = `Zhang et al.`,
+)
+reducedDim(sce, "PCA")=phate_output
+
+`Zhang et al.`$PHATE=ifelse(`Zhang et al.`$Group=="Antral_follicle","Antral_follicle",
+                            ifelse(`Zhang et al.`$Group=="Secondary_follicle","Secondary_follicle","Early_follicle"))
+
+# Infer trajectories
+sce <- slingshot(sce, reducedDim = 'PCA', clusterLabels = `Zhang et al.`$PHATE)
+
+# Infer lineages
+lin <- getLineages(SlingshotDataSet(sce), clusterLabels = `Zhang et al.`$PHATE,start.clus = 'Early_follicle',end.clus = 'Antral_follicle')
+crv <- getCurves(lin)
+
+# Compute pseudotime
+pseudotime <- slingPseudotime(crv, na = FALSE)
+cellWeights <- slingCurveWeights(crv)
+
+plotGeneCount(curve = crv, counts = counts,
+              clusters = `Zhang et al.`$Group,
+              models = sce)
+
+PseudoMAP=data.frame(pseudotime=scales::rescale(pseudotime, to = c(0, 100)),Group=`Zhang et al.`$Group)
+
+max_primary=filter(PseudoMAP,Group%in%c("Primordial follicle","Primary follicle"))%>%select(Lineage1)%>%max()
+
+min_secondary=filter(PseudoMAP,Group%in%"Secondary follicle")%>%select(Lineage1)%>%min()
+max_secondary=filter(PseudoMAP,Group%in%"Secondary follicle")%>%select(Lineage1)%>%max()
+
+min_antral=filter(PseudoMAP,Group%in%"Antral follicle")%>%select(Lineage1)%>%min()
+
+transi1=(max_primary+min_secondary)/2
+transi2=(max_secondary+min_antral)/2
+
+
+# Extract counts data
+counts <- as.matrix(Zhang_data[rownames(logcpm_Zhang),])
+
+
+#Fit NB-GAM
+sce_GAM_all_genes <- fitGAM(counts = counts, sds = crv, nknots = 6, verbose = FALSE)
+
+#Differential expression analysis along pseudotime
+assoRes <- associationTest(sce_GAM_all_genes)
+
+resPseudo <- assoRes %>% rownames_to_column(var = "gene") %>% dplyr::filter(pvalue < 0.05&meanLogFC>1)
+
+smoothPseudo <- lapply(1:length(resPseudo$gene), function(i){
+  DEGpseudo <- resPseudo[i,"gene"]
+  ysmooth <- predictSmooth(models = sce_GAM_all_genes, gene = DEGpseudo, nPoints = 101,tidy=TRUE)
+  return(ysmooth)
+}) %>% do.call(rbind, .)
+
+smoothPseudo <- smoothPseudo %>% dplyr::filter(lineage==1) %>%
+  pivot_wider(id_cols = gene, names_from = time,values_from = yhat) %>%
+  column_to_rownames(var = "gene")
+colnames(smoothPseudo) <- 0:(ncol(smoothPseudo)-1)
+
+# When is peak expression reached for each gene ?
+
+Mat_max=data.frame(Timepoint=colnames(smoothPseudo)[apply(smoothPseudo,1,which.max)], Gene=rownames(smoothPseudo))
+Mat_max$Timepoint=str_remove_all(Mat_max$Timepoint,"pt_")
+Mat_max$Timepoint=as.numeric(Mat_max$Timepoint)
+Mat_max=Mat_max[order(Mat_max$Timepoint,decreasing=TRUE),]
+
+# Order DEG by pseudotime of peak expression
+
+gene_order=Mat_max$Gene
+
+genetransi1=filter(Mat_max,Timepoint<=round(transi1,0))%>%select(Gene)%>%head(1)%>%as.character()
+genetransi2=filter(Mat_max,Timepoint<=round(transi2,0))%>%select(Gene)%>%head(1)%>%as.character()
+
+
+#max_zscore=3
+heatmapPseudo <- as.data.frame(t(scale(t(smoothPseudo))))
+#heatmapPseudo[heatmapPseudo > max_zscore] <- max_zscore
+#heatmapPseudo[heatmapPseudo < -max_zscore] <- -max_zscore
+
+heatmapPseudo <- pivot_longer(heatmapPseudo %>% rownames_to_column(var = "gene"), -gene, values_to = "Expression Z-score", names_to = "pseudotime")
+heatmapPseudo$gene <- factor(heatmapPseudo$gene, levels = gene_order)
+heatmapPseudo$pseudotime <- as.numeric(heatmapPseudo$pseudotime)
+
+library(scales)
+
+FigHeatmapPseudoZhang=ggplot(heatmapPseudo, aes(x = pseudotime, y = gene, fill = `Expression Z-score`))+
+  geom_tile()+
+  scale_fill_gradientn(colours=colorRampPalette(c("blue","white","red"))(100),values = rescale(c(-2.5,0,10)))+
+  scale_y_discrete(expand = c(0, 0),position = "left", labels = NULL,breaks=NULL, name="DEGs along pseudotime")+ scale_x_continuous(name="Pseudotime",breaks=seq(0,100,10),expand = c(0, 0))+theme_bw()+labs(fill="Expression Z-score")+
+  theme(axis.title.x=element_text(size=15))+ 
+  theme(axis.title.y=element_text(size=15,vjust=2))+ 
+  theme(axis.text.x=element_text(size=10,margin=margin(5,0,0,0)))+ 
+  theme(axis.text.y=element_text(size=10,margin=margin(0,0,0,0)))+ 
+  theme(legend.title=element_text(size=15))+ 
+  theme(legend.text=element_text(size=12))+
+  geom_hline(yintercept=genetransi1, 
+                color = "black", size=1)+
+  geom_hline(yintercept=genetransi2, 
+                color = "black", size=1)+
+  geom_vline(xintercept=transi1, linetype="dashed", 
+                color = "black", size=1)+
+  geom_vline(xintercept=transi2, linetype="dashed", 
+                color = "black", size=1)
+```
+
+```{r plotgenecounts}
+
+plotGeneCount <- function(curve, counts = NULL, gene = NULL, clusters = NULL,
+                          models = NULL, title = NULL){
+  rd <- slingshot::slingReducedDim(curve)
+  if (!is.null(gene)) {
+    logcounts <- log1p(counts[gene, ])
+    cols <- logcounts
+    scales <- scale_color_gradient(low = "yellow", high = 'red')
+    if (is.null(title)) title <- paste0("logged count of gene ", gene)
+  } else {
+    cols <- as.character(clusters)
+    scales <- NULL
+    if (is.null(title)) title <- "Clusters"
+  }
+  # Getting the main plot
+  df <- data.frame(dim1 = rd[, 1], dim2 = rd[, 2], col = cols)
+  p <- ggplot(df, aes(x = dim1, y = dim2, col = col)) +
+    geom_point(size = 2) +
+    theme_classic() +
+    labs(col = title) +
+    scales
+  
+  # Adding the curves
+  for (i in seq_along(slingCurves(curve))) {
+    curve_i <- slingCurves(curve)[[i]]
+    curve_i <- curve_i$s[curve_i$ord, seq_len(2)]
+    colnames(curve_i) <- c("dim1", "dim2")
+    p <- p + geom_path(data = as.data.frame(curve_i), col = "black", size = 2)
+  }
+  
+  # Adding the knots
+  nCurves <- length(slingCurves(curve))
+  if (!is.null(models)) {
+    if (is(models, "list")) {
+      sce <- FALSE
+    } else if(is(models, "SingleCellExperiment")){
+      sce <- TRUE
+    }
+    if(!sce){
+      m <- .getModelReference(models)
+      knots <- m$smooth[[1]]$xp
+    } else if(sce){
+      knots <- S4Vectors::metadata(models)$tradeSeq$knots
+    }
+    # times <- slingPseudotime(curve, na = FALSE)
+    knots_dim <- matrix(ncol = 2, nrow = nCurves * length(knots))
+    for (ii in seq_along(slingCurves(curve))) {
+      S <- project_to_curve(x = slingCurves(curve)[[ii]]$s,
+                            s = slingCurves(curve)[[ii]]$s[slingCurves(curve)[[ii]]$ord, ],
+                            stretch = 0)
+      for (jj in seq_along(knots)) {
+        kn <- knots[jj]
+        times <- S$lambda
+        knot <- which.min(abs(times - kn))
+        knots_dim[jj + (ii-1)*length(knots), ] <- S$s[knot, seq_len(2)]
+      }
+    }
+    knots_dim <- as.data.frame(knots_dim)
+    colnames(knots_dim) <- c("dim1", "dim2")
+    p <- p +
+      geom_point(data = knots_dim, col = "black", size = 2)
+  }
+  return(p)
+}
+
+FigPHATEZhang=plotGeneCount(curve = crv, counts = counts,
+              clusters = `Zhang et al.`$Group,
+              models = sce)+ xlab("PHATE_dim1")+ylab("PHATE_dim2")+labs(color = "Follicle stage")+
+  scale_color_manual(values=c("Primordial follicle"="#FF5A5F",
+                              "Primary follicle"="#90E0EF",
+                              "Secondary follicle"="#95D5B2",
+                              "Antral follicle"="#FFC300"),
+                     limits =c("Primordial follicle","Primary follicle",
+                               "Secondary follicle","Antral follicle"))+
+  geom_point(size=5)+
+  theme(axis.title.x=element_text(size=15))+ 
+  theme(axis.title.y=element_text(size=15,vjust=0))+ 
+  theme(axis.text.x=element_text(size=10,margin=margin(3,0,10,0)))+ 
+  theme(axis.text.y=element_text(size=10,margin=margin(0,3,0,15)))+ 
+  theme(legend.title=element_text(size=15))+ 
+  theme(legend.text=element_text(size=12))
+
+
+geneTopPri=filter(Mat_max,Timepoint<=round(transi1,0))%>%select(Gene)
+geneTopSec=filter(Mat_max,Timepoint<=round(transi2,0) & Timepoint>round(transi1,0))%>%select(Gene)
+geneTopAnt=filter(Mat_max,Timepoint>round(transi2,0))%>%select(Gene)
+
+geneTopPri=resPseudo[resPseudo$gene%in%geneTopPri$Gene,]%>%arrange(desc(waldStat))%>%select(gene)%>%head(5)
+geneTopSec=resPseudo[resPseudo$gene%in%geneTopSec$Gene,]%>%arrange(desc(waldStat))%>%select(gene)%>%head(5)
+geneTopAnt=resPseudo[resPseudo$gene%in%geneTopAnt$Gene,]%>%arrange(desc(waldStat))%>%select(gene)%>%head(5)
+
+list_genes=list()
+for (k in c(geneTopPri$gene,geneTopSec$gene,geneTopAnt$gene)){
+ list_genes[[k]]=plotGeneCount(crv, counts,k)+ggtitle(paste0(k))+scale_color_gradient(low = "yellow", high = 'red',limits=c(0,max(log1p(counts[c(geneTopPri$gene,geneTopSec$gene,geneTopAnt$gene), ]))))+
+ theme(axis.title.x=element_text(size=10))+ xlab("PHATE_dim1")+ylab("PHATE_dim2")+
+   theme(axis.title.y=element_text(size=10,vjust=0))+ 
+   theme(axis.text.x=element_text(size=6,margin=margin(3,0,10,0)))+ 
+   theme(axis.text.y=element_text(size=6,margin=margin(0,3,0,15)))+ 
+   theme(legend.position="none")
+}
+
+FigTop15Zhang=plot_grid(list_genes[[1]],
+          list_genes[[2]],
+          list_genes[[3]],
+          list_genes[[4]],
+          list_genes[[5]],
+          list_genes[[6]],
+          list_genes[[7]],
+          list_genes[[8]],
+          list_genes[[9]],
+          list_genes[[10]],
+          list_genes[[11]],
+          list_genes[[12]],
+          list_genes[[13]],
+          list_genes[[14]],
+          list_genes[[15]],
+          ncol = 5, nrow = 3,align="hv")
+
+```
+
+```{r, count sum}
+
+Primordial=colSums(logcpm_Zhang[,rownames(`Zhang et al.`%>%filter(Group=="Primordial follicle"))])
+Primary=colSums(logcpm_Zhang[,rownames(`Zhang et al.`%>%filter(Group=="Primary follicle"))])
+Secondary=colSums(logcpm_Zhang[,rownames(`Zhang et al.`%>%filter(Group=="Secondary follicle"))])
+Antral=colSums(logcpm_Zhang[,rownames(`Zhang et al.`%>%filter(Group=="Antral follicle"))])
+
+df_summary <- data.frame(category=c(rep("Primordial follicle",17),
+                                    rep("Primary follicle",25),
+                                    rep("Secondary follicle",12),
+                                    rep("Antral follicle",23)),value=c(Primordial,Primary,Secondary,Antral)) %>%
+  group_by(category) %>%
+  summarize(mean=mean(value),
+            sd=sd(value))
+df_summary$category=factor(df_summary$category,levels=c("Primordial follicle","Primary follicle","Secondary follicle","Antral follicle"))
+
+FigCountsZhang=ggplot(df_summary)  +
+  geom_errorbar(aes(x=category, ymin=mean-sd, ymax=mean+sd), width=0.3, color='black')+
+  geom_bar(aes(x=category, y=mean,fill=category), stat='identity',width=0.3)+
+  scale_fill_manual(values = c("Primordial follicle"="#FF5A5F",
+                              "Primary follicle"="#90E0EF",
+                              "Secondary follicle"="#95D5B2",
+                              "Antral follicle"="#FFC300"))+
+  scale_x_discrete(labels = label_wrap(10)) +
+  labs(fill="Follicle stage")+
+  theme_classic() + ylab("Total normalized counts")+xlab("Follicle stage")+
+  theme(panel.border= element_blank()) +
+  theme(axis.text.x = element_text(angle = 0, vjust = 0.5)) +
+  theme(axis.line.x = element_line(color = "black", size = 0.6, 
+                                   lineend = "square"),
+        axis.line.y = element_line(color = "black", size = 0.6, 
+                                   lineend = "square"))
+
+t.test(Primordial,Primary)
+t.test(Primary,Secondary)
+t.test(Secondary,Antral)
+```
+
+
+```{r, GSEA folliculo}
+
+
+listGO=list()
+entrez=bitr(rownames(resZhangPrimordial),fromType = "SYMBOL",toType = "ENTREZID",OrgDb = org.Hs.eg.db)
+geneList=merge(resZhangPrimordial,entrez,by.x=0,by.y="SYMBOL")
+geneList2=geneList$logFC
+names(geneList2)=geneList$ENTREZID
+geneList2 = sort(geneList2, decreasing = TRUE)
+listGO[["Primordial"]]=geneList2
+
+entrez=bitr(rownames(resZhangPrimary),fromType = "SYMBOL",toType = "ENTREZID",OrgDb = org.Hs.eg.db)
+geneList=merge(resZhangPrimary,entrez,by.x=0,by.y="SYMBOL")
+geneList2=geneList$logFC
+names(geneList2)=geneList$ENTREZID
+geneList2 = sort(geneList2, decreasing = TRUE)
+listGO[["Primary"]]=geneList2
+
+
+entrez=bitr(rownames(resZhangSecondary),fromType = "SYMBOL",toType = "ENTREZID",OrgDb = org.Hs.eg.db)
+geneList=merge(resZhangSecondary,entrez,by.x=0,by.y="SYMBOL")
+geneList2=geneList$logFC
+names(geneList2)=geneList$ENTREZID
+geneList2 = sort(geneList2, decreasing = TRUE)
+listGO[["Secondary"]]=geneList2
+
+
+entrez=bitr(rownames(resZhangAntral),fromType = "SYMBOL",toType = "ENTREZID",OrgDb = org.Hs.eg.db)
+geneList=merge(resZhangAntral,entrez,by.x=0,by.y="SYMBOL")
+geneList2=geneList$logFC
+names(geneList2)=geneList$ENTREZID
+geneList2 = sort(geneList2, decreasing = TRUE)
+listGO[["Antral"]]=geneList2
+
+ck <- compareCluster(geneCluster = listGO, fun = gseGO,OrgDb =org.Hs.eg.db,
+                     ont="BP",
+                     pAdjustMethod = "fdr",
+                     pvalueCutoff  = 0.05)
+clusterProfiler::dotplot(ck,label_format=50)
+
+```
+
+```{r, PHATE by patient}
+
+plotGeneCountPatient <- function(curve, counts , clusters ,models,color){
+rd <- slingshot::slingReducedDim(curve)
+cols <- factor(clusters,levels=c("A","B","F","G","C","X","E","S"))
+color = as.character(color)
+df <- data.frame(dim1 = rd[, 1], dim2 = rd[, 2], col = cols,color=color)
+p <- ggplot(df, aes(x = dim1, y = dim2)) 
+
+#for (i in seq_along(slingCurves(curve))) {
+#  curve_i <- slingCurves(curve)[[i]]
+#  curve_i <- curve_i$s[curve_i$ord, seq_len(2)]
+#  colnames(curve_i) <- c("dim1", "dim2")
+#  p <- p + geom_path(data = as.data.frame(curve_i), col = "black", size = 0.5)
+#}
+
+p = p +
+    geom_point(aes(color=color), size=4)+
+ geom_text_repel(
+    aes(label = col),
+    size = 3,
+    box.padding = unit(0.4, "lines"),
+    point.padding = unit(0.4, "lines"),
+    segment.size=0.1
+  )+xlim(-0.15,0.2)+ylim(-0.06,0.09)+
+  theme_classic() +
+  labs(col = title)
+return(p)
+}
+
+options(ggrepel.max.overlaps = Inf)
+
+FigZhangPHATEPatient=plotGeneCountPatient(curve = crv, counts = counts,
+              clusters = `Zhang et al.`$Patient,
+              models = sce,color=`Zhang et al.`$Group)+
+ theme(axis.title.x=element_text(size=10))+ xlab("PHATE_dim1")+ylab("PHATE_dim2")+
+labs(shape = "Patient",color="Follicle stage")+scale_color_manual(values=c("Primordial follicle"="#FF5A5F",
+                              "Primary follicle"="#90E0EF",
+                              "Secondary follicle"="#95D5B2",
+                              "Antral follicle"="#FFC300"),limits =c("Primordial follicle","Primary follicle",
+                               "Secondary follicle","Antral follicle"))+
+   theme(axis.title.y=element_text(size=10,vjust=0))+ 
+   theme(axis.text.x=element_text(size=6,margin=margin(3,0,10,0)))+ 
+   theme(axis.text.y=element_text(size=6,margin=margin(0,3,0,15)))
+
+```
+
+```{r, GO}
+
+GOtransi1=filter(Mat_max,Timepoint<=round(transi1,0))%>%select(Gene)
+GOtransi2=filter(Mat_max,(Timepoint>round(transi1,0))&(Timepoint<=round(transi2,0)))%>%select(Gene)
+GOtransi3=filter(Mat_max,Timepoint>round(transi2,0))%>%select(Gene)
+
+universe=bitr(rownames(logcpm_Zhang),fromType = "SYMBOL",toType = "ENTREZID",OrgDb = org.Hs.eg.db)
+entrez=bitr(GOtransi1$Gene,fromType = "SYMBOL",toType = "ENTREZID",OrgDb = org.Hs.eg.db)
+rownames(entrez)=entrez$ENTREZID
+
+GO_list=enrichGO(gene          = entrez$ENTREZID,
+              universe      = universe$ENTREZID,
+              OrgDb         = org.Hs.eg.db,
+              ont           = "BP",
+              pAdjustMethod = "BH",
+              pvalueCutoff  = 1,
+              qvalueCutoff  = 1,
+              readable      = TRUE)
+View(GO_list@result)
+
+entrez=bitr(GOtransi2$Gene,fromType = "SYMBOL",toType = "ENTREZID",OrgDb = org.Hs.eg.db)
+rownames(entrez)=entrez$ENTREZID
+
+GO_list=enrichGO(gene          = entrez$ENTREZID,
+              universe      = universe$ENTREZID,
+              OrgDb         = org.Hs.eg.db,
+              ont           = "BP",
+              pAdjustMethod = "BH",
+              pvalueCutoff  = 1,
+              qvalueCutoff  = 1,
+              readable      = TRUE)
+data=GO_list@result%>%filter(p.adjust<0.05)%>%filter(Count>=10)%>%head(n=10)
+  data$Description=factor(data$Description,levels=rev(data$Description))
+  GO_plot=ggplot(data=data, aes(x=Description, y=p.adjust)) +
+  geom_bar(stat="identity",fill="red") + coord_flip()+  guides(colour = guide_legend(override.aes = list(size=3)))+theme_bw()+ scale_x_discrete(labels = function(x) str_wrap(x, width = 35))+ylab("Adjusted p-value")+
+  theme(axis.title.x=element_text(size=10,margin=margin(0,0,0,0)))+ 
+  theme(axis.title.y=element_text(size=10,vjust=0))+ 
+  theme(axis.text.x=element_text(size=10,margin=margin(3,0,10,0)))+ 
+  theme(axis.text.y=element_text(size=10,margin=margin(0,3,0,10)))+ 
+  theme(legend.title=element_text(size=10))+ theme(plot.title = element_text(size=12))+
+  theme(legend.text=element_text(size=12))+ theme(legend.position = "none")    
+
+
+View(GO_list@result)
+
+
+entrez=bitr(GOtransi3$Gene,fromType = "SYMBOL",toType = "ENTREZID",OrgDb = org.Hs.eg.db)
+rownames(entrez)=entrez$ENTREZID
+
+GO_list=enrichGO(gene          = entrez$ENTREZID,
+              universe      = universe$ENTREZID,
+              OrgDb         = org.Hs.eg.db,
+              ont           = "BP",
+              pAdjustMethod = "BH",
+              pvalueCutoff  = 1,
+              qvalueCutoff  = 1,
+              readable      = TRUE)
+data=GO_list@result%>%filter(p.adjust<0.05)%>%filter(Count>=10)%>%head(n=10)
+  data$Description=factor(data$Description,levels=rev(data$Description))
+  GO_plot=ggplot(data=data, aes(x=Description, y=p.adjust)) +
+  geom_bar(stat="identity",fill="red")+ coord_flip()+  guides(colour = guide_legend(override.aes = list(size=3)))+theme_bw()+ scale_x_discrete(labels = function(x) str_wrap(x, width = 35))+ylab("Adjusted p-value")+
+  theme(axis.title.x=element_text(size=10,margin=margin(0,0,0,0)))+ 
+  theme(axis.title.y=element_text(size=10,vjust=0))+ 
+  theme(axis.text.x=element_text(size=10,margin=margin(3,0,10,0)))+ 
+  theme(axis.text.y=element_text(size=10,margin=margin(0,3,0,10)))+ 
+  theme(legend.title=element_text(size=10))+ theme(plot.title = element_text(size=12))+
+  theme(legend.text=element_text(size=12))+ theme(legend.position = "none")    
+View(GO_list@result)
+
+
+
+```
+
+```{r, pseudotime analysis}
+
+resPseudo <- assoRes %>% rownames_to_column(var = "gene") %>% dplyr::filter(pvalue < 0.05&meanLogFC>3)
+
+smoothPseudo <- lapply(1:length(resPseudo$gene), function(i){
+  DEGpseudo <- resPseudo[i,"gene"]
+  ysmooth <- predictSmooth(models = sce_GAM_all_genes, gene = DEGpseudo, nPoints = 101,tidy=TRUE)
+  return(ysmooth)
+}) %>% do.call(rbind, .)
+
+smoothPseudo <- smoothPseudo %>% dplyr::filter(lineage==1) %>%
+  pivot_wider(id_cols = gene, names_from = time,values_from = yhat) %>%
+  column_to_rownames(var = "gene")
+colnames(smoothPseudo) <- 0:(ncol(smoothPseudo)-1)
+
+Mat_max=data.frame(Timepoint=colnames(smoothPseudo)[apply(smoothPseudo,1,which.max)], Gene=rownames(smoothPseudo))
+Mat_max$Timepoint=str_remove_all(Mat_max$Timepoint,"pt_")
+Mat_max$Timepoint=as.numeric(Mat_max$Timepoint)
+Mat_max=Mat_max[order(Mat_max$Timepoint,decreasing=TRUE),]
+
+# Order DEG by pseudotime of peak expression
+
+gene_order=Mat_max$Gene
+
+genetransi1=filter(Mat_max,Timepoint<=round(transi1,0))%>%select(Gene)%>%head(1)%>%as.character()
+genetransi2=filter(Mat_max,Timepoint<=round(transi2,0))%>%select(Gene)%>%head(1)%>%as.character()
+
+GOtransi1=filter(Mat_max,Timepoint<=round(transi1,0))%>%select(Gene)
+GOtransi2=filter(Mat_max,(Timepoint>round(transi1,0))&(Timepoint<=round(transi2,0)))%>%select(Gene)
+GOtransi3=filter(Mat_max,Timepoint>round(transi2,0))%>%select(Gene)
+
+
+resPseudo_transi1=filter(df_genes_pseudo,former%in%GOtransi1$Gene)
+intersect(resPseudo_transi1$new,DatabaseTF$`HGNC symbol`)
+
+resPseudo_transi2=filter(df_genes_pseudo,former%in%GOtransi2$Gene)
+intersect(resPseudo_transi2$new,DatabaseTF$`HGNC symbol`)
+
+resPseudo_transi3=filter(df_genes_pseudo,former%in%GOtransi3$Gene)
+intersect(resPseudo_transi3$new,DatabaseTF$`HGNC symbol`)
+
+
+```
+
